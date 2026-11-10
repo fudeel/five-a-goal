@@ -9,6 +9,7 @@ use calcio_core::{FixedClock, GameEvent, Match, MatchConfig, Phase, PHYSICS_DT};
 use input::HumanInput;
 use macroquad::prelude::*;
 use render::camera::{CamTarget, CameraRig};
+use render::anim::Animator;
 use render::mesh::draw_meshes;
 use render::scene::Scene;
 use setup::Setup;
@@ -47,6 +48,7 @@ async fn main() {
     cam.snap(m.world.ball.pos);
     let scene = Scene::new(&m.world, &cam);
     let mut human = HumanInput::default();
+    let mut animator = Animator::new();
     let mut paused = false;
     let mut debug = false;
 
@@ -120,8 +122,13 @@ async fn main() {
         set_camera(&cam.to_mq());
         draw_meshes(&scene.sky);
         draw_meshes(&scene.arena);
+        animator.celebrate = match m.state.phase {
+            Phase::Goal { team, .. } => Some(team),
+            _ => None,
+        };
+        animator.update(&m.world, if paused { 0.0 } else { frame_dt.min(0.1) });
         let light = scene.lighting(&cam);
-        scene.dynamic(&m.world, &light).draw(&light);
+        scene.dynamic(&m.world, &animator, &light).draw(&light);
         if debug {
             render::debug::draw(&m);
         }

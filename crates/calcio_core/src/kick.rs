@@ -1,5 +1,9 @@
-//! Kicks: ground passes, shots, lobs/chips, with curl. Used identically by the
-//! human player and the AI.
+//! Kicks: ground passes, shots, lobs/chips, crosses, with curl, and the
+//! keeper's throws and rolls. Used identically by the human player and the AI.
+//!
+//! A kick is not instant: the player winds up, the foot meets the ball at the
+//! contact time (if the ball is still at the kicking foot — otherwise it's an
+//! air kick) and then follows through. Every player has a preferred foot.
 //!
 //! Launch parameters are found by running the *real* ball simulation forward
 //! (drag, Magnus, bounces, rolling) and searching for the speed / elevation /
@@ -20,6 +24,110 @@ pub enum KickKind {
     Shot,
     /// High ball with backspin (lofted pass, chip).
     Lob,
+    /// Driven, curling ball into the box at head height.
+    Cross,
+    /// Keeper: overarm throw from the hands.
+    Throw,
+    /// Keeper: underarm roll along the ground.
+    Roll,
+}
+
+impl KickKind {
+    /// Thrown or rolled from the keeper's hands.
+    pub fn from_hands(self) -> bool {
+        matches!(self, KickKind::Throw | KickKind::Roll)
+    }
+
+    /// Time from the start of the wind-up to the moment of contact (s).
+    pub fn windup(self, power: f32) -> f32 {
+        let p = clamp(power, 0.0, 1.0);
+        match self {
+            KickKind::Pass => 0.09 + 0.08 * p,
+            // A placed finish is quick, a full-power strike needs a big back-swing.
+            KickKind::Shot => 0.1 + 0.16 * p * p,
+            KickKind::Lob => 0.13 + 0.08 * p,
+            KickKind::Cross => 0.16 + 0.06 * p,
+            KickKind::Throw => 0.42,
+            KickKind::Roll => 0.38,
+        }
+    }
+
+    /// Follow-through after contact (s).
+    pub fn follow_through(self, power: f32) -> f32 {
+        let p = clamp(power, 0.0, 1.0);
+        match self {
+            KickKind::Pass => 0.22 + 0.1 * p,
+            KickKind::Shot => 0.32 + 0.12 * p,
+            KickKind::Lob | KickKind::Cross => 0.3 + 0.08 * p,
+            KickKind::Throw | KickKind::Roll => 0.3,
+        }
+    }
+}
+
+/// Which foot strikes the ball.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Foot {
+    Left,
+    Right,
+}
+
+impl Foot {
+    /// −1 for the left foot, +1 for the right.
+    pub fn side(self) -> f32 {
+        match self {
+            Foot::Left => -1.0,
+            Foot::Right => 1.0,
+        }
+    }
+
+    pub fn other(self) -> Foot {
+        match self {
+            Foot::Left => Foot::Right,
+            Foot::Right => Foot::Left,
+        }
+    }
+}
+
+/// A kick in progress: wind-up, contact, follow-through.
+#[derive(Clone, Copy, Debug)]
+pub struct KickState {
+    pub req: KickRequest,
+    pub foot: Foot,
+    /// Seconds since the wind-up started.
+    pub t: f32,
+    pub windup: f32,
+    pub follow: f32,
+    /// Contact time has passed.
+    pub done_contact: bool,
+    /// The foot met nothing (the ball had gone).
+    pub missed: bool,
+}
+
+impl KickState {
+    pub fn new(req: KickRequest, foot: Foot, windup: f32) -> Self {
+        Self {
+            req,
+            foot,
+            t: 0.0,
+            windup,
+            follow: req.kind.follow_through(req.power),
+            done_contact: false,
+            missed: false,
+        }
+    }
+
+    /// 0..1 through the wind-up, then 1..2 through the follow-through.
+    pub fn progress(&self) -> f32 {
+        if self.t < self.windup {
+            self.t / self.windup
+        } else {
+            1.0 + clamp((self.t - self.windup) / self.follow, 0.0, 1.0)
+        }
+    }
+
+    pub fn finished(&self) -> bool {
+        self.t >= self.windup + self.follow
+    }
 }
 
 /// A request to kick, produced by the human input or the AI.
@@ -36,6 +144,8 @@ pub struct KickRequest {
     pub curl: f32,
     /// Seconds this request has been waiting for the ball to come into reach.
     pub age: f32,
+    /// Shot: pick the corner away from the keeper at the moment of contact.
+    pub pick_corner: bool,
 }
 
 impl KickRequest {
@@ -47,7 +157,13 @@ impl KickRequest {
             power: clamp(power, 0.0, 1.0),
             curl: 0.0,
             age: 0.0,
+            pick_corner: false,
         }
+    }
+
+    pub fn picking_corner(mut self) -> Self {
+        self.pick_corner = true;
+        self
     }
     pub fn with_target(mut self, t: Vec3) -> Self {
         self.target = Some(t);
@@ -88,7 +204,7 @@ impl Default for KickSpec {
         Self {
             reach: 0.9,
             max_height: 0.75,
-            patience: 0.45,
+            patience: 0.6,
             pass_arrive_soft: 2.5,
             pass_arrive_firm: 7.5,
             shot_min: 14.0,
@@ -106,8 +222,102 @@ pub fn can_kick(p: &Player, ball: &Ball, bs: &BallSpec, ks: &KickSpec) -> bool {
     let to = (ball.pos - p.pos).flat();
     let d = to.length();
     d < ks.reach
+        && !p.airborne()
+        && !p.on_ground()
         && ball.height(bs) < ks.max_height
         && (d < 0.5 || to.normalize_or_zero().dot(p.forward()) > -0.2)
+}
+
+/// Ball position relative to the player as (along the facing, to the right of
+/// the facing, height of the ball's bottom).
+fn relative(p_pos: Vec3, facing: f32, ball_pos: Vec3, bs: &BallSpec) -> (f32, f32, f32) {
+    let f = Vec3::from_heading(facing);
+    let r = f.cross(Vec3::Y);
+    let d = (ball_pos - p_pos).flat();
+    (d.dot(f), d.dot(r), ball_pos.y - bs.radius)
+}
+
+/// Is a ball at `rel` (see [`relative`]) where `foot` can strike it?
+/// `slack` widens the zone (contact is judged a little more leniently than the
+/// decision to start the wind-up).
+fn in_strike_zone(rel: (f32, f32, f32), foot: Foot, ks: &KickSpec, slack: f32) -> bool {
+    let (along, lat, h) = rel;
+    // Lateral offset towards the kicking foot's side: the leg reaches out to
+    // the side more easily than across the body.
+    let out = lat * foot.side();
+    along > -0.15 - slack && along < 0.8 + slack && out > -0.28 - slack && out < 0.6 + slack && h < ks.max_height
+}
+
+/// Facing after turning towards the kick for `t` seconds.
+fn facing_after(p: &Player, req: &KickRequest, t: f32) -> f32 {
+    crate::math::rotate_towards(p.facing, req.dir.heading(), KICK_TURN_RATE * t)
+}
+
+/// How fast a player turns into a kick (rad/s).
+pub const KICK_TURN_RATE: f32 = 7.0;
+
+/// Wind-up time of `req` for `p`, longer when the body has to turn into the
+/// kick (side-foot passes need less turning).
+pub fn effective_windup(p: &Player, req: &KickRequest) -> f32 {
+    let base = req.kind.windup(req.power);
+    let angle = crate::math::wrap_angle(req.dir.heading() - p.facing).abs();
+    let free = match req.kind {
+        KickKind::Pass | KickKind::Roll => 0.7,
+        _ => 0.3,
+    };
+    base + ((angle - free).max(0.0) / KICK_TURN_RATE - 0.5 * base).max(0.0)
+}
+
+/// The foot a player uses for a ball at `rel`: the preferred one unless the
+/// ball is clearly on the other side.
+pub fn choose_foot(p: &Player, ball: &Ball, bs: &BallSpec) -> Foot {
+    foot_for_lat(p, relative(p.pos, p.facing, ball.pos, bs).1)
+}
+
+fn foot_for_lat(p: &Player, lat: f32) -> Foot {
+    let pref = p.preferred_foot();
+    if lat * pref.side() < -0.1 {
+        pref.other()
+    } else {
+        pref
+    }
+}
+
+/// Should `p` start winding up now for `req`? The ball (and the player) are
+/// extrapolated to the moment of contact.
+pub fn ready_to_strike(p: &Player, req: &KickRequest, ball: &Ball, bs: &BallSpec, ks: &KickSpec) -> Option<Foot> {
+    if !can_kick(p, ball, bs, ks) && ball.pos.flat_distance(p.pos) > 2.5 {
+        return None;
+    }
+    let t = effective_windup(p, req);
+    let ball_then = ball.pos + ball.vel.flat() * t;
+    let me_then = p.pos + p.vel.flat() * t;
+    let rel = relative(me_then, facing_after(p, req, t), ball_then, bs);
+    let foot = foot_for_lat(p, rel.1);
+    in_strike_zone(rel, foot, ks, 0.0).then_some(foot)
+}
+
+/// At the moment of contact: is the ball at the kicking foot?
+pub fn ball_at_foot(p: &Player, foot: Foot, ball: &Ball, bs: &BallSpec, ks: &KickSpec) -> bool {
+    in_strike_zone(relative(p.pos, p.facing, ball.pos, bs), foot, ks, 0.15)
+}
+
+/// Where the keeper's hands hold the ball during a throw or roll, at wind-up
+/// progress `k` (0..1): drawn back on the throwing side, then released.
+pub fn hand_point(p: &Player, kind: KickKind, k: f32) -> Vec3 {
+    let f = p.forward();
+    let r = f.cross(Vec3::Y) * p.preferred_foot().side();
+    let k = clamp(k, 0.0, 1.0);
+    // (to the throwing side, up, forward)
+    let held = v3(0.0, 1.05, 0.32);
+    let (back, release) = match kind {
+        KickKind::Throw => (v3(0.34, 1.9, -0.32), v3(0.2, 2.0, 0.32)),
+        _ => (v3(0.24, 0.55, -0.42), v3(0.1, 0.12, 0.6)),
+    };
+    let (a, b, t) = if k < 0.7 { (held, back, k / 0.7) } else { (back, release, (k - 0.7) / 0.3) };
+    let e = t * t * (3.0 - 2.0 * t);
+    let q = a.lerp(b, e);
+    p.pos + r * q.x + Vec3::Y * q.y + f * q.z
 }
 
 /// Backspin axis for travel direction `dir` (topspin is the opposite).
@@ -332,6 +542,31 @@ pub fn goal_target(
     )
 }
 
+/// Re-aims a shot at the corner away from the goalkeeper guarding `side`
+/// (keeps the height; flips the curl with the side).
+pub fn aim_away_from_keeper(req: &mut KickRequest, pitch: &crate::pitch::Pitch, side: crate::pitch::Side, from: Vec3, keeper: Option<Vec3>) {
+    let Some(t) = req.target else {
+        return;
+    };
+    let lateral = match keeper {
+        Some(k) if k.z > from.z * 0.15 => -0.82,
+        Some(_) => 0.82,
+        None => {
+            if from.z > 0.0 {
+                -0.6
+            } else {
+                0.6
+            }
+        }
+    };
+    let nt = goal_target(pitch, side, lateral, t.y);
+    req.target = Some(nt);
+    req.dir = (nt - from).flat().normalize_or(req.dir);
+    if req.curl != 0.0 {
+        req.curl = -nt.z.signum() * side.sign() * req.curl.abs();
+    }
+}
+
 /// Picks the teammate best aligned with `dir` and returns where to pass to
 /// (leading a moving receiver).
 pub fn auto_target(kicker: &Player, mates: &[&Player], dir: Vec3, cone: f32) -> Option<Vec3> {
@@ -381,7 +616,7 @@ pub fn plan_kick(
     ks: &KickSpec,
     rng: &mut Rng,
 ) -> KickPlan {
-    let from = v3(ball.pos.x, bs.radius, ball.pos.z);
+    let from = if req.kind == KickKind::Throw { ball.pos } else { v3(ball.pos.x, bs.radius, ball.pos.z) };
     let dir = req.dir.flat().normalize_or(kicker.forward());
     let power = clamp(req.power, 0.0, 1.0);
     let curl_w = req.curl * ks.curl_spin;
@@ -431,6 +666,36 @@ pub fn plan_kick(
             let spin = backspin_axis(dir) * backspin + v3(0.0, curl_w * 0.5, 0.0);
             let sigma = 0.02 + speed_term + turn_term + 0.05 * volley;
             (vel, spin, target, sigma, 0.02)
+        }
+        KickKind::Cross => {
+            // Whipped in towards head height, curling (sidespin) into the target.
+            let target = req.target.unwrap_or(from + dir * (10.0 + 14.0 * power));
+            let dist = (target - from).flat_length().max(4.0);
+            let aim = v3(target.x, 1.5, target.z);
+            let speed = clamp(10.0 + 0.75 * dist, 14.0, 27.0) * (0.92 + 0.16 * power);
+            let (vel, spin) = solve_shot(from, aim, speed, -4.0, curl_w, bs, turf);
+            let sigma = 0.018 + 0.01 * power + speed_term + turn_term + 0.05 * volley;
+            (vel, spin, aim, sigma, sigma * 0.6)
+        }
+        KickKind::Throw => {
+            // Overarm: a flat throw that drops to the receiver's feet.
+            let target = req.target.unwrap_or(from + dir * (10.0 + 18.0 * power));
+            let dist = (target - from).flat_length().max(3.0);
+            let aim = v3(target.x, 0.45, target.z);
+            let speed = clamp(7.0 + 0.5 * dist, 9.0, 21.0);
+            let (vel, spin) = solve_shot(from, aim, speed, -6.0, 0.0, bs, turf);
+            (vel, spin, aim, 0.012 + turn_term, 0.01)
+        }
+        KickKind::Roll => {
+            // Underarm along the ground: an easy pace for the receiver.
+            let target = req.target.or_else(|| auto_target(kicker, mates, dir, ks.assist_cone));
+            let (dir, dist) = match target {
+                Some(t) => ((t - from).flat().normalize_or(dir), (t - from).flat_length()),
+                None => (dir, 6.0 + 14.0 * power),
+            };
+            let speed = solve_pass_speed(from, dir, dist, ks.pass_arrive_soft + 1.0, bs, turf);
+            let spin = Vec3::Y.cross(dir) * (speed / bs.radius);
+            (dir * speed, spin, from + dir * dist, 0.008 + turn_term, 0.0)
         }
     };
     // Apply the error: yaw, elevation and a little speed.
@@ -590,5 +855,35 @@ mod tests {
             (zs.iter().map(|z| (z - m) * (z - m)).sum::<f32>() / zs.len() as f32).sqrt()
         };
         assert!(spread(1.0) > spread(0.2) * 1.5);
+    }
+
+    #[test]
+    fn cross_arrives_at_head_height_and_curls() {
+        let bs = BallSpec::default();
+        let turf = Turf::default();
+        let ks = perfect();
+        // From the right wing into the middle, 6 m out.
+        let k = kicker_at(v3(12.0, 0.0, 6.5), -2.4);
+        let mut ball = Ball::new(v3(12.3, bs.radius, 6.3));
+        ball.grounded = true;
+        let target = v3(15.0, 0.0, 0.0);
+        let dir = (target - ball.pos).flat().normalize_or(Vec3::X);
+        let req = KickRequest::new(KickKind::Cross, dir, 0.6).with_target(target).with_curl(0.7);
+        let mut rng = Rng::new(3);
+        let plan = plan_kick(&req, &k, &[], &ball, &bs, &turf, &ks, &mut rng);
+        ball.vel = plan.vel;
+        ball.spin = plan.spin;
+        ball.grounded = false;
+        let mut closest = (f32::MAX, 0.0f32);
+        simulate(&ball, &bs, &turf, 3.0, |b, _| {
+            let d = b.pos.flat_distance(target);
+            if d < closest.0 {
+                closest = (d, b.pos.y);
+            }
+            false
+        });
+        assert!(closest.0 < 0.6, "cross missed the target by {}", closest.0);
+        assert!(closest.1 > 1.0 && closest.1 < 2.1, "cross at height {}", closest.1);
+        assert!(plan.spin.y.abs() > 10.0, "a cross should curl");
     }
 }

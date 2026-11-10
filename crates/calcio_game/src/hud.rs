@@ -22,6 +22,8 @@ pub fn power_bar(world: &World, cam: &CameraRig, charge: Option<(KickKind, f32)>
         KickKind::Shot => Color::from_rgba(240, 80, 60, 255),
         KickKind::Pass => Color::from_rgba(80, 200, 120, 255),
         KickKind::Lob => Color::from_rgba(90, 160, 240, 255),
+        KickKind::Cross => Color::from_rgba(250, 170, 60, 255),
+        KickKind::Throw | KickKind::Roll => Color::from_rgba(230, 230, 230, 255),
     };
     draw_rectangle(
         bx - 2.0,
@@ -43,13 +45,16 @@ pub fn power_bar(world: &World, cam: &CameraRig, charge: Option<(KickKind, f32)>
         KickKind::Shot => "SHOT",
         KickKind::Pass => "PASS",
         KickKind::Lob => "LOB",
+        KickKind::Cross => "CROSS",
+        KickKind::Throw => "THROW",
+        KickKind::Roll => "ROLL",
     };
     draw_text(label, bx, by - 6.0, 18.0, WHITE);
 }
 
 /// Small help line at the bottom of the screen.
 pub fn controls_help() {
-    let s = "WASD move  Shift sprint  J shoot  K pass  L lob (hold)  Q/E curl  Space tackle  Esc pause  F1 debug";
+    let s = "WASD move  Shift sprint  J shoot  K pass  L lob  I cross (hold)  Q/E curl  Space tackle  Esc pause  F1 debug";
     draw_text(
         s,
         16.0,

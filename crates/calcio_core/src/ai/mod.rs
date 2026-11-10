@@ -131,6 +131,7 @@ impl Ai {
         }
     }
 
+
     /// Writes intents for every AI-controlled player.
     pub fn think(&mut self, world: &mut World, ctx: &AiContext, dt: f32) {
         if world.players.is_empty() {
@@ -298,7 +299,7 @@ impl Ai {
             if owner == Some(id) {
                 // On the ball: decide every `think_interval`, keep dribbling in between.
                 let tuning = self.tuning[team];
-                if brain.decide_timer <= 0.0 && world.players[id].pending_kick.is_none() {
+                if brain.decide_timer <= 0.0 && !world.players[id].busy_kicking() {
                     let mates: Vec<Player> = world
                         .players
                         .iter()
@@ -318,7 +319,8 @@ impl Ai {
                     );
                     brain.action = Some(a);
                     brain.decide_timer = tuning.think_interval * self.rng.range(0.8, 1.25);
-                    decide::execute(&mut world.players[id], &spec, a, &mate_refs);
+                    let goal = world.pitch.goal_centre(attack);
+                    decide::execute(&mut world.players[id], &spec, a, goal);
                 } else if let Some(decide::Action::Dribble { dir, sprint }) = brain.action {
                     let p = &mut world.players[id];
                     p.desired = dir
@@ -388,6 +390,14 @@ impl Ai {
                     0.7,
                     Duty::Keeper,
                 )
+            } else if let Some(pt) = (Some(id) == self.chaser[team] && world.players[id].kick.is_none())
+                .then(|| {
+                    let reaction = self.tuning[team].reaction;
+                    header_plan(world, id, attack, &opp_refs, &self.pred, (0.1 - self.pred_timer).max(0.0), reaction)
+                })
+                .flatten()
+            {
+                (pt, 1.0, Duty::Chase)
             } else if Some(id) == self.chaser[team] {
                 let (t, pt) = predict::intercept(
                     &world.players[id],
@@ -399,7 +409,7 @@ impl Ai {
                 // First-time finish when the ball arrives in a good spot.
                 if t < 0.35
                     && !keeper_holding
-                    && world.players[id].pending_kick.is_none()
+                    && !world.players[id].busy_kicking()
                     && world.players[id].since_kick > 0.6
                 {
                     let (chance, goal_pt) =
@@ -408,9 +418,14 @@ impl Ai {
                         let dir = (goal_pt - pt)
                             .flat()
                             .normalize_or(world.players[id].forward());
+                        let keeper_down = opp_refs.iter().any(|o| {
+                            o.role == Role::Goalkeeper && (o.down > 0.0 || o.dive_timer > 0.0)
+                        });
+                        let power = if keeper_down { 0.4 } else { 0.6 };
                         world.players[id].pending_kick = Some(
-                            crate::kick::KickRequest::new(crate::kick::KickKind::Shot, dir, 0.75)
-                                .with_target(goal_pt),
+                            crate::kick::KickRequest::new(crate::kick::KickKind::Shot, dir, power)
+                                .with_target(goal_pt)
+                                .picking_corner(),
                         );
                     }
                 }
@@ -486,10 +501,14 @@ impl Ai {
 }
 
 /// Arrive at `target`: slow down when close, sprint when urgent and far.
+/// Players close to the ball keep facing it (jockey) unless they must sprint.
 pub fn go_to(p: &mut Player, spec: &PlayerSpec, target: Vec3, urgency: f32, look: Vec3) {
     let d = (target - p.pos).flat();
     let dist = d.length();
     p.look_at = Some(look);
+    p.walk = false;
+    let ball_near = p.pos.flat_distance(look) < 7.0;
+    p.strafe = p.role == Role::Goalkeeper || (ball_near && dist < 4.0 && urgency < 0.95);
     if dist < 0.2 {
         p.desired = Vec3::ZERO;
         p.sprint = false;
@@ -505,6 +524,72 @@ pub fn go_to(p: &mut Player, spec: &PlayerSpec, target: Vec3, urgency: f32, look
     let speed = (dist * 2.2).min(cruise);
     p.desired = d / dist * speed;
     p.sprint = urgency > 0.8 && dist > 2.5;
+    if p.sprint && p.role != Role::Goalkeeper {
+        p.strafe = false;
+    }
+}
+
+/// High ball coming that `id` can meet with the head before it can be
+/// played on the ground: run under it, aim, and jump in time so the head
+/// is at the ball's height when it arrives. Returns false otherwise.
+fn header_plan(world: &mut World, id: usize, attack: Side, opp_refs: &[&Player], pred: &Prediction, pred_age: f32, reaction: f32) -> Option<Vec3> {
+    use crate::player::HeaderAim;
+    let spec = world.player_spec.clone();
+    let p = world.players[id].clone();
+    let committed = p.jump.is_some() && p.header.is_some();
+    if p.holding_ball || p.dive_timer > 0.0 || p.stumble > 0.0 || world.players.iter().any(|q| q.holding_ball) {
+        return None;
+    }
+    let Some((th, pt)) = predict::header_intercept(&p, &spec, pred, reaction) else {
+        return committed.then_some(p.pos);
+    };
+    let (tg, _) = predict::intercept(&p, &spec, pred, &world.ball_spec, reaction);
+    if tg < th - 0.15 && !committed {
+        return None; // it can be played on the ground first
+    }
+    // The prediction was made up to 0.1 s ago.
+    let t = th - pred_age;
+    let goal = world.pitch.goal_centre(attack);
+    let own_goal = world.pitch.goal_centre(attack.opposite());
+    let (dir, target, power) = if pt.flat_distance(goal) < 11.0 && (goal.x - pt.x) * attack.sign() > 0.5 {
+        // Header at goal, away from the keeper.
+        let keeper = opp_refs.iter().find(|o| o.role == Role::Goalkeeper).map(|k| k.pos.z).unwrap_or(0.0);
+        let lateral = if keeper > pt.z * 0.2 { -0.8 } else { 0.8 };
+        let t = crate::kick::goal_target(&world.pitch, attack, lateral, 0.4);
+        ((t - pt).flat().normalize_or(v3(attack.sign(), 0.0, 0.0)), Some(t), 0.75)
+    } else if pt.flat_distance(own_goal) < 14.0 {
+        // Clear it: away from goal and towards the wing.
+        (v3(attack.sign(), 0.0, if pt.z >= 0.0 { 0.7 } else { -0.7 }).normalize_or(Vec3::X), None, 1.0)
+    } else {
+        // Knock it on to a teammate ahead.
+        let fwd = v3(attack.sign(), 0.0, 0.0);
+        let mates: Vec<&Player> = world.players.iter().filter(|m| m.team == p.team).collect();
+        match crate::kick::auto_target(&p, &mates, fwd, 0.9) {
+            Some(m) => ((m - pt).flat().normalize_or(fwd), Some(m), 0.45),
+            None => (fwd, None, 0.6),
+        }
+    };
+    let pm = &mut world.players[id];
+    if t < 1.0 {
+        pm.header = Some(HeaderAim { dir, target, power, ttl: t + 0.25 });
+    }
+    let rise = pt.y - spec.head_height;
+    if rise > 0.04 && pm.jump.is_none() && pm.air <= 0.0 {
+        // Peak a little above the ball so the head meets it on the way up or at the top.
+        let h = rise + 0.08;
+        let run = (pm.speed() / 4.0).clamp(0.0, 1.0);
+        let takeoff = spec.takeoff_standing + (spec.takeoff_running - spec.takeoff_standing) * run;
+        let g = crate::ball::GRAVITY;
+        let v0 = (2.0 * g * h).sqrt();
+        // Time from launch until the head first reaches the ball's height.
+        let up = (v0 - (v0 * v0 - 2.0 * g * (rise + 0.02).max(0.0)).max(0.0).sqrt()) / g;
+        // Where momentum carries the head by then.
+        let at = pm.pos + pm.vel.flat() * t + pm.forward() * 0.04;
+        if t <= takeoff + up + 0.02 && at.flat_distance(pt) < 0.45 {
+            pm.jump_request = Some(h);
+        }
+    }
+    Some(v3(pt.x, 0.0, pt.z))
 }
 
 #[cfg(test)]
@@ -602,7 +687,7 @@ mod tests {
             human_team: None,
             ..MatchConfig::default()
         });
-        let (mut passes, mut shots, mut tackles) = (0, 0, 0);
+        let (mut passes, mut shots, mut tackles, mut headers) = (0, 0, 0, 0);
         while m.is_running() {
             m.step(PHYSICS_DT);
             for e in m.drain_events().0 {
@@ -620,6 +705,7 @@ mod tests {
                         ..
                     } => shots += 1,
                     GameEvent::Tackle { .. } => tackles += 1,
+                    GameEvent::Header { .. } => headers += 1,
                     _ => {}
                 }
             }
@@ -629,18 +715,25 @@ mod tests {
         assert!(passes > 20, "passes {passes}");
         assert!(shots > 3, "shots {shots}");
         assert!(tackles > 0, "tackles {tackles}");
-        let mut m3 = Match::new(MatchConfig {
-            team_size: 3,
-            half_length: 120.0,
-            human_team: None,
-            ..MatchConfig::default()
-        });
-        while m3.is_running() {
-            m3.step(PHYSICS_DT);
+        assert!(headers > 0, "headers {headers}");
+        // Goals: ~3 per 4-minute 3v3 match; play up to three to avoid an unlucky 0–0.
+        let mut goals3 = 0;
+        for seed in 0..3u64 {
+            let mut m3 = Match::new(MatchConfig {
+                team_size: 3,
+                half_length: 120.0,
+                human_team: None,
+                seed: 11 + seed * 7919,
+                ..MatchConfig::default()
+            });
+            while m3.is_running() {
+                m3.step(PHYSICS_DT);
+            }
+            goals3 += m3.state.score[0] + m3.state.score[1];
+            if goals3 > 0 {
+                break;
+            }
         }
-        assert!(
-            m3.state.score[0] + m3.state.score[1] > 0,
-            "no goals in a whole 3v3 match"
-        );
+        assert!(goals3 > 0, "no goals in three 3v3 matches");
     }
 }

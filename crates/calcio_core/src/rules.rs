@@ -230,6 +230,15 @@ impl Match {
                 p.vel = Vec3::ZERO;
                 p.desired = Vec3::ZERO;
                 p.pending_kick = None;
+                p.kick = None;
+                p.jump = None;
+                p.jump_request = None;
+                p.air = 0.0;
+                p.air_vel = 0.0;
+                p.header = None;
+                p.slide = None;
+                p.slide_request = None;
+                p.fall = None;
                 p.holding_ball = false;
                 p.stumble = 0.0;
                 p.dive_timer = 0.0;
@@ -332,7 +341,7 @@ impl Match {
         if let Some(t) = taker {
             if !self.world.players[t].human
                 && self.state.phase_time > AI_KICKOFF_DELAY
-                && self.world.players[t].pending_kick.is_none()
+                && !self.world.players[t].busy_kicking()
             {
                 // Simple kick-off: play it to the nearest teammate (or just forward).
                 let attack = self.attack_side(team);
@@ -587,7 +596,7 @@ mod tests {
                     // A mostly idle human who takes his kick-offs.
                     if let (Phase::Kickoff { .. }, Some(t)) = (m.state.phase, m.state.kickoff_taker)
                     {
-                        if m.world.players[t].human && m.world.players[t].pending_kick.is_none() {
+                        if m.world.players[t].human && !m.world.players[t].busy_kicking() {
                             let dir = v3(m.attack_side(0).sign(), 0.0, 0.0);
                             m.world.players[t].pending_kick =
                                 Some(KickRequest::new(KickKind::Pass, dir, 0.2));

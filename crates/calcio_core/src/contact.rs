@@ -316,6 +316,10 @@ pub fn capsule_moving(
     let p = ball.prev_pos + path * hi;
     let (q, _) = closest_point_on_segment(p, cap.a, cap.b);
     let n = (p - q).normalize_or((ball.prev_pos - q).normalize_or(Vec3::Y));
+    if (ball.vel - cap_vel).dot(n) >= 0.0 {
+        // Already separating (e.g. just knocked by a moving body): leave it.
+        return 0.0;
+    }
     ball.pos = q + n * (reach + 1e-4);
     impact(ball, spec, n, surf, cap_vel)
 }

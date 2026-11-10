@@ -1,11 +1,11 @@
-# CalcioFive — Development TODO (Phase 1: single-player gameplay)
+# CalcioFive — Development TODO
 
 Phase 1 is **one human against AI (or with AI teammates)** on a five-a-side pitch,
 written in **Rust**, with realistic ball physics and a physically simulated goal net.
 Only what is listed in this file is in scope for this phase.
 
-**Status:** all Phase 1 steps are implemented (see Progress). Still to do on a real PC:
-play-test the feel with the keyboard and confirm the frame rate.
+**Status:** Phase 1 (single-player gameplay) is complete. Phase 2 (realistic animation,
+characters, full action set, key bindings) is in progress — see the Phase 2 section below.
 
 ---
 
@@ -226,3 +226,112 @@ play-test the feel with the keyboard and confirm the frame rate.
 - [x] Performance check in release build (target 144 FPS on a mid-range PC) — CPU cost measured headless: ~2–4 ms/frame for 5v5 geometry + lighting, ~25 µs per physics step; FPS still to be confirmed on the target PC
 - [x] README: controls, how to build/run, architecture overview
 - **Done when:** all tests pass and a full match feels good.
+
+---
+
+# Phase 2 — Realistic animation, characters, full action set, key bindings
+
+Goal: footballers that look and move like real players, every football action available
+to the human (and the AI), and keyboard controls the player can remap. Everything that
+touches the ball stays **pure physics** (impulses, contacts, timing), exactly as in Phase 1.
+
+| Topic | Decision |
+|---|---|
+| Animation approach | Procedural skeletal animation: joint rig with forward kinematics, two-bone IK for legs and arms, foot trajectories driven by the real ground speed (no foot sliding), keyframed action clips blended on top. |
+| Realistic cadence | Step frequency and stride length follow running biomechanics (walk ≈ 0.9 Hz cycles, jog ≈ 1.4 Hz, sprint ≈ 2.1 Hz); stride = speed ÷ cadence. |
+| Kick timing | A kick has a wind-up, a contact moment (ball must be at the foot, otherwise it is missed) and a follow-through. Animation and physics share that timing. |
+| New actions | Jump, header, slide tackle, cross, chip, volley, keeper throw/roll; falls and get-ups. |
+| Facing | Players can keep facing the ball while moving ("jockey"), which gives backward and side running. |
+| Key bindings | Every action is remappable in a Controls screen and saved to a config file. |
+
+## Phase 2 progress
+
+### P2-00 — Plan · `p2/00-plan`
+- [x] Phase 2 plan (this section)
+- [x] Commit `Cargo.lock` (pins macroquad 0.4.16)
+
+### P2-01 — Skeleton rig · `p2/01-rig`
+- [x] Joint hierarchy (pelvis, spine, chest, neck, head, clavicles, arms, hands, legs, feet, toes) with real proportions
+- [x] Pose representation that blends linearly (pelvis transform, spine/head angles, foot targets, arm channels / hand targets)
+- [x] Forward kinematics to world joints and frames; two-bone IK with pole vectors for legs and arms
+- [x] Per-player animator state kept between frames
+- [x] Renderer draws from the rig
+- [x] Tests: bone lengths preserved, IK reaches reachable targets, no NaNs
+
+### P2-02 — Character model · `p2/02-character-model`
+- [x] Lofted torso (hips, waist, chest, shoulders) following pelvis and chest frames
+- [x] Tapered, muscled limbs (thigh, calf, deltoid, forearm) with elliptical sections and joint caps
+- [x] Head shape (skull, jaw, nose, ears) and several hair styles
+- [x] Boots, socks with shin guards, shorts, short-sleeved shirt with collar and cuffs, keeper gloves
+- [x] Shirt numbers on the back
+- [x] Body variety: height and build per player
+
+### P2-03 — Movement modes · `p2/03-movement-modes`
+- [x] Walk speed in addition to jog and sprint
+- [x] Face-the-ball movement ("jockey") enabling backward and side running
+- [x] Turning in place and realistic turning at speed
+- [x] AI defenders jockey when close to the ball carrier
+- [x] Tests: backward movement keeps facing, speeds per mode
+
+### P2-04 — Locomotion animation · `p2/04-locomotion-anim`
+- [x] Idle: breathing, weight shift, ready stance near the ball
+- [x] Walk, jog, run, sprint with realistic cadence and stride length
+- [x] Backward walk/run and side steps
+- [x] Foot trajectories from ground speed + foot locking during stance (no sliding)
+- [x] Shuffle steps when turning on the spot
+- [x] Lean with acceleration, banking in turns, pelvis/torso counter-rotation, arm swing
+- [x] Head looks at the ball
+- [x] Smooth transitions between all gaits
+
+### P2-05 — Kick states · `p2/05-kick-states`
+- [x] Kick state machine: wind-up → contact → follow-through, duration by kick type and power
+- [x] Contact only if the ball is at the kicking foot (otherwise a miss)
+- [x] Preferred foot per player
+- [x] Cross as its own kick type (curling, driven into the box)
+- [x] Keeper throw / roll distribution
+- [x] AI and human use the same kick states; tests updated
+
+### P2-06 — Kick animations · `p2/06-kick-anims`
+- [x] Pass (inside of the foot), shot (laces), cross (wrapped instep), chip, volley
+- [x] Plant foot beside the ball, kicking-foot IK to the ball at contact
+- [x] Arms and torso counter-balance, follow-through by power
+- [x] Keeper underarm roll and overarm throw
+
+### P2-07 — Jump & header · `p2/07-jump-header`
+- [x] Jump physics (take-off crouch, flight, landing) for standing and running jumps
+- [x] Headers: aimed impulse from the head when the ball meets it; unaimed balls bounce off
+- [x] Body collision follows the jump
+- [x] AI: attacking and defensive headers on high balls
+- [x] Tests: jump height, header direction
+
+### P2-08 — Slide tackle · `p2/08-slide-tackle`
+- [x] Slide physics: body slides with ground friction, extended leg collides with the ball
+- [x] Players caught by the slide are tripped (fall and get up)
+- [x] Recovery time after sliding
+- [x] AI uses slide tackles when a standing tackle cannot reach
+- [x] Tests: slide distance, ball deflection, trips
+
+### P2-09 — Action animations · `p2/09-action-anims`
+- [x] Jump and header
+- [x] Slide tackle and standing tackle
+- [x] Fall and get-up
+- [x] First touch / trap (foot, thigh, chest)
+- [x] Keeper ready stance, catch, dive polish
+- [x] Goal celebrations
+
+### P2-10 — Key bindings · `p2/10-key-bindings`
+- [ ] Every action bound to a key, defaults included
+- [ ] Controls screen (from setup and pause): select action, press a key, conflicts swap, reset to defaults
+- [ ] Bindings saved to and loaded from a config file
+- [ ] Tests: parsing and saving the config
+
+### P2-11 — Human actions · `p2/11-human-actions`
+- [ ] Keys for jump/header, slide tackle, cross, chip, walk, jockey
+- [ ] Context header when the ball is at head height
+- [ ] HUD help reflects the current bindings
+
+### P2-12 — Animation QA · `p2/12-anim-qa`
+- [ ] Preview sequences of every animation
+- [ ] Tests: no foot sliding at constant speed, IK limits, no NaNs across a soak
+- [ ] AI-vs-AI soak with the new actions, balance check
+- [ ] README and TODO updated

@@ -23,6 +23,16 @@ pub enum GameEvent {
         kind: KickKind,
         speed: f32,
     },
+    /// A player went into a slide tackle.
+    Slide { player: usize },
+    /// A sliding leg knocked the ball.
+    SlideTouch { player: usize },
+    /// `player` was tripped (by a slide) and went down.
+    Trip { player: usize, by: usize },
+    /// A player headed the ball where he aimed.
+    Header { player: usize },
+    /// A kick met nothing: the ball was no longer at the foot.
+    Whiff { player: usize },
     /// The goalkeeper caught or parried the ball.
     Save { player: usize, caught: bool },
     /// A standing tackle was attempted.

@@ -66,6 +66,23 @@ pub fn time_to_reach(p: &Player, spec: &PlayerSpec, target: Vec3, reaction: f32)
     reaction + t + if p.stumble > 0.0 { p.stumble } else { 0.0 }
 }
 
+/// Earliest moment the predicted ball passes within heading reach of `p`
+/// (standing or jumping) at a spot he can run to: (time, ball centre).
+pub fn header_intercept(p: &Player, spec: &PlayerSpec, pred: &Prediction, reaction: f32) -> Option<(f32, Vec3)> {
+    let lo = spec.head_height - 0.22;
+    let hi = spec.head_height + spec.jump_running + 0.08;
+    for (i, pt) in pred.points.iter().enumerate() {
+        let t = i as f32 * pred.step;
+        if t < 0.12 || pt.y < lo || pt.y > hi {
+            continue;
+        }
+        if time_to_reach(p, spec, *pt, reaction) + 0.08 <= t {
+            return Some((t, *pt));
+        }
+    }
+    None
+}
+
 /// Earliest time and point at which `p` can meet the predicted ball (ball low enough).
 pub fn intercept(
     p: &Player,

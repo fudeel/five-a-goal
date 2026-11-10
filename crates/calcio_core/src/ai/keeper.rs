@@ -124,18 +124,23 @@ fn distribute(world: &mut World, id: usize, attack: Side) {
             best = Some((score, m.pos + m.vel.flat() * (d / 10.0)));
         }
     }
-    world.release_ball(id);
-    let p = &mut world.players[id];
+    if gk.busy_kicking() {
+        return;
+    }
+    let p = &world.players[id];
     let (req, face) = match best {
         Some((_, target)) => {
             let dir = (target - p.pos)
                 .flat()
                 .normalize_or(v3(attack.sign(), 0.0, 0.0));
             let d = target.flat_distance(p.pos);
-            let kind = if d > 15.0 {
-                KickKind::Lob
+            // Roll it short, throw it to midfield, kick it long.
+            let kind = if d < 13.0 {
+                KickKind::Roll
+            } else if d < 26.0 {
+                KickKind::Throw
             } else {
-                KickKind::Pass
+                KickKind::Lob
             };
             (KickRequest::new(kind, dir, 0.45).with_target(target), dir)
         }
@@ -146,6 +151,10 @@ fn distribute(world: &mut World, id: usize, attack: Side) {
             (KickRequest::new(KickKind::Lob, dir, 0.85), dir)
         }
     };
+    if !req.kind.from_hands() {
+        world.release_ball(id);
+    }
+    let p = &mut world.players[id];
     p.facing = face.heading();
     p.pending_kick = Some(req);
 }

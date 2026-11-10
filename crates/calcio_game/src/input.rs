@@ -1,7 +1,8 @@
 //! Keyboard controls for the human footballer.
 //!
 //! * WASD / arrows: move (relative to the camera); Shift: sprint
-//! * J shoot, K pass, L lob — hold to charge, release to kick
+//! * J shoot, K pass, L lob, I cross — hold to charge, release to kick
+//!   (a keeper holding the ball rolls it with pass and throws it with lob)
 //! * Q / E held while releasing: curl left / right
 //! * Space: standing tackle
 
@@ -24,7 +25,9 @@ fn key_for(kind: KickKind) -> KeyCode {
     match kind {
         KickKind::Shot => KeyCode::J,
         KickKind::Pass => KeyCode::K,
-        KickKind::Lob => KeyCode::L,
+        KickKind::Lob | KickKind::Throw => KeyCode::L,
+        KickKind::Cross => KeyCode::I,
+        KickKind::Roll => KeyCode::K,
     }
 }
 
@@ -77,7 +80,7 @@ impl HumanInput {
 
         // Kick charging.
         if self.charging.is_none() {
-            for kind in [KickKind::Shot, KickKind::Pass, KickKind::Lob] {
+            for kind in [KickKind::Shot, KickKind::Pass, KickKind::Lob, KickKind::Cross] {
                 if is_key_pressed(key_for(kind)) {
                     self.charging = Some((kind, 0.0));
                     break;
@@ -99,6 +102,14 @@ impl HumanInput {
                 }
                 let p = &world.players[id];
                 let dir = if mv != Vec3::ZERO { mv } else { p.forward() };
+                // A keeper with the ball in his hands rolls, throws or kicks it from the hands.
+                let holding = p.holding_ball;
+                let kind = match kind {
+                    KickKind::Pass if holding => KickKind::Roll,
+                    KickKind::Lob | KickKind::Cross if holding => KickKind::Throw,
+                    KickKind::Shot if holding => KickKind::Lob,
+                    k => k,
+                };
                 let mut req = KickRequest::new(kind, dir, power).with_curl(curl);
                 match kind {
                     KickKind::Shot => {
@@ -128,7 +139,20 @@ impl HumanInput {
                             req = req.with_target(t);
                         }
                     }
-                    KickKind::Pass => {}
+                    KickKind::Cross => {
+                        // To a teammate in the box, else towards the far post.
+                        let goal = world.pitch.goal_centre(attack);
+                        let to_box = (goal - p.pos).flat().normalize_or(dir);
+                        let mates: Vec<_> = world.players.iter().filter(|m| m.team == p.team).collect();
+                        let aim_dir = (dir + to_box).normalize_or(to_box);
+                        let spot = goal - Vec3::new(attack.sign() * 4.0, 0.0, 0.0) - Vec3::new(0.0, 0.0, p.pos.z.signum() * 1.2);
+                        let t = kick::auto_target(p, &mates, aim_dir, 0.7).unwrap_or(spot);
+                        req = req.with_target(t);
+                    }
+                    KickKind::Pass | KickKind::Throw | KickKind::Roll => {}
+                }
+                if holding && !kind.from_hands() {
+                    world.release_ball(id);
                 }
                 world.players[id].pending_kick = Some(req);
             } else {

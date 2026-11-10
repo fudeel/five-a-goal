@@ -128,11 +128,15 @@ pub fn choose(
     } else {
         p_goal * weight * tuning.shoot_bias
     };
+    // Keeper on the ground: a quick, placed finish.
+    let keeper_down = opponents
+        .iter()
+        .any(|o| o.role == Role::Goalkeeper && (o.down > 0.0 || o.dive_timer > 0.0 || o.stumble > 0.0));
     let mut best = (
         shoot_score,
         Action::Shoot {
             target,
-            power: clamp(0.5 + dist / 26.0, 0.5, 0.95),
+            power: if keeper_down { 0.4 } else { clamp(0.5 + dist / 26.0, 0.5, 0.95) },
             curl: if rng.chance(0.3) {
                 -target.z.signum() * attack.sign() * 0.6
             } else {
@@ -245,8 +249,11 @@ pub fn choose(
 }
 
 /// Turns an action into intents on the player.
-pub fn execute(p: &mut Player, spec: &PlayerSpec, action: Action, mates: &[&Player]) {
-    let _ = mates;
+/// Turns an action into movement and kick requests. `goal` is the centre of
+/// the goal being attacked.
+pub fn execute(p: &mut Player, spec: &PlayerSpec, action: Action, goal: Vec3) {
+    p.strafe = false;
+    p.walk = false;
     match action {
         Action::Shoot {
             target,
@@ -257,7 +264,8 @@ pub fn execute(p: &mut Player, spec: &PlayerSpec, action: Action, mates: &[&Play
             p.pending_kick = Some(
                 KickRequest::new(KickKind::Shot, dir, power)
                     .with_target(target)
-                    .with_curl(curl),
+                    .with_curl(curl)
+                    .picking_corner(),
             );
             p.desired = dir * spec.jog_speed * 0.6;
             p.sprint = false;
@@ -266,8 +274,19 @@ pub fn execute(p: &mut Player, spec: &PlayerSpec, action: Action, mates: &[&Play
             target, lob, power, ..
         } => {
             let dir = (target - p.pos).flat().normalize_or(p.forward());
-            let kind = if lob { KickKind::Lob } else { KickKind::Pass };
-            p.pending_kick = Some(KickRequest::new(kind, dir, power).with_target(target));
+            // A lofted ball from a wide position to a teammate near goal is
+            // whipped in as a cross, curling in towards the goal.
+            let wide = (p.pos.z - goal.z).abs() > 3.5 && p.pos.flat_distance(goal) < 17.0;
+            let cross = lob && wide && target.flat_distance(goal) < 8.0;
+            let mut req = if cross {
+                let left = -dir.cross(Vec3::Y);
+                let curl = if (goal - target).dot(left) > 0.0 { 0.6 } else { -0.6 };
+                KickRequest::new(KickKind::Cross, dir, power).with_curl(curl)
+            } else {
+                KickRequest::new(if lob { KickKind::Lob } else { KickKind::Pass }, dir, power)
+            };
+            req = req.with_target(target);
+            p.pending_kick = Some(req);
             p.desired = dir * spec.jog_speed * 0.5;
             p.sprint = false;
         }
@@ -307,14 +326,39 @@ pub fn press(
         ball.lerp(goal_side, 0.35)
     };
     super::go_to(p, spec, target, if d > 3.0 { 1.0 } else { 0.7 }, ball);
+    // Close to the carrier: jockey, facing the ball, ready to react.
+    p.strafe = d < 3.0;
     let ball_d = p.pos.flat_distance(ball);
-    let exposed = carrier.pos.flat_distance(ball) > 0.5;
+    // A ball being struck sits at the kicker's foot: not a loose touch.
+    let exposed = carrier.pos.flat_distance(ball) > 0.5 && !carrier.busy_kicking();
     let in_front = (ball - p.pos).flat().normalize_or_zero().dot(p.forward()) > 0.3;
     if ball_d < 1.05 && in_front && p.tackle_cooldown <= 0.0 && p.stumble <= 0.0 {
-        let chance = if exposed { 0.55 } else { 0.12 } * aggression;
+        // Attempts per second (this runs every physics step).
+        let rate = if exposed { 2.2 } else { 0.35 } * aggression;
+        let chance = rate * crate::PHYSICS_DT;
         if rng.chance(chance) {
             p.tackle_request = true;
             return true;
+        }
+    }
+    // Out of reach of a standing tackle and losing the race: slide in where
+    // the ball will be.
+    if p.can_act() && p.tackle_cooldown <= 0.0 && ball_d > 1.1 && ball_d < 3.0 && p.speed() > 2.5 {
+        let ball_then = ball + carrier.vel.flat() * 0.3;
+        let to = (ball_then - p.pos).flat();
+        let d = to.length();
+        let dir = to.normalize_or(p.forward());
+        let aligned = dir.dot(p.vel.flat().normalize_or(p.forward())) > 0.6;
+        let escaping = carrier.vel.flat().dot((carrier.pos - p.pos).flat().normalize_or_zero()) > 1.5;
+        // Only when the ball is away from his feet (a heavy touch, a strike):
+        // otherwise the leg takes the man.
+        let loose = carrier.pos.flat_distance(ball_then) > 0.55 || carrier.busy_kicking();
+        if d > 1.2 && d < 2.6 && aligned && escaping && loose {
+            let rate = 0.9 * aggression;
+            if rng.chance(rate * crate::PHYSICS_DT) {
+                p.slide_request = Some(dir);
+                return true;
+            }
         }
     }
     false

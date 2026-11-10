@@ -74,7 +74,7 @@ impl Possession {
             let p = &players[id];
             let d = p.pos.flat_distance(ball.pos);
             let rel = (ball.vel - p.vel).flat_length();
-            d < 1.6 && rel < 5.0 && ball.height(bs) < 0.8
+            d < 1.6 && rel < 5.0 && ball.height(bs) < 0.8 && !p.on_ground()
         });
     }
 
@@ -184,6 +184,10 @@ pub fn play_touch(
     } else {
         TouchKind::Dribble
     };
+    p.since_touch = 0.0;
+    p.touch_height = height;
+    p.touch_trap = kind == TouchKind::Trap;
+    p.touch_at = ball.pos;
     let mut target = dribble_velocity(p, spec, cs, ball);
     // Error: heavier for fast incoming balls, high balls and sprinting.
     let difficulty = 0.03 * incoming + 0.6 * height + 0.04 * p.speed();
@@ -239,7 +243,11 @@ pub fn step_control(
         .filter(|&o| players[o].pos.flat_distance(ball.pos) < cs.shield_distance);
     let mut best: Option<(usize, f32)> = None;
     for p in players.iter() {
-        if !p.dribble || p.touch_cooldown > 0.0 || p.stumble > 0.0 || p.holding_ball {
+        if !p.dribble || p.touch_cooldown > 0.0 || p.stumble > 0.0 || p.holding_ball || p.kick.is_some() || p.airborne() || p.on_ground() {
+            continue;
+        }
+        // Waiting to strike a ball rolling with him: don't push it away again.
+        if p.pending_kick.is_some() && (ball.vel - p.vel).flat_length() < 4.0 {
             continue;
         }
         if let Some(o) = shielded_by {

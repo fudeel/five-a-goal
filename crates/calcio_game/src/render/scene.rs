@@ -1,6 +1,7 @@
 //! Everything drawn in 3D for one frame, independent of the window (so it can
 //! be reused by tools and tests).
 
+use super::anim::Animator;
 use super::arena;
 use super::ball::BallRenderer;
 use super::camera::CameraRig;
@@ -37,20 +38,24 @@ impl Scene {
     }
 
     /// Builds all dynamic geometry for the current world state.
-    pub fn dynamic(&self, world: &World, light: &Lighting) -> MeshBuilder {
+    pub fn dynamic(&self, world: &World, anim: &Animator, light: &Lighting) -> MeshBuilder {
         let mut b = MeshBuilder::new();
         let r = world.ball_spec.radius;
         let ps = &world.player_spec;
         // Translucent ground decals first, then solid geometry.
         for p in &world.players {
-            self.players.shadows(&mut b, p, ps, light);
+            if let Some(sk) = anim.skeleton(p.id) {
+                self.players.shadows(&mut b, p, ps, sk, light);
+            }
         }
         self.ball.shadows(&mut b, world.ball.pos, r, light);
         for p in world.players.iter().filter(|p| p.human) {
             self.players.marker(&mut b, p, world.time as f32);
         }
         for p in &world.players {
-            self.players.build(&mut b, p, ps);
+            if let Some(sk) = anim.skeleton(p.id) {
+                self.players.build(&mut b, p, sk);
+            }
         }
         self.ball
             .build(&mut b, world.ball.pos, world.ball.orient, r);

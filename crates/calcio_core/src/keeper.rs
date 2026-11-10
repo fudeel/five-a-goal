@@ -34,7 +34,7 @@ impl Default for KeeperSpec {
             max_hand_height: 2.35,
             dive_speed: 4.0,
             dive_time: 0.55,
-            recover_time: 0.5,
+            recover_time: 0.85,
             catch_speed: 15.0,
             hold_min: 1.1,
         }
@@ -115,8 +115,8 @@ pub fn try_save(
     {
         return None;
     }
-    if gk.stumble > 0.0 && gk.dive_timer <= 0.0 {
-        return None; // on the ground after a dive
+    if (gk.stumble > 0.0 && gk.dive_timer <= 0.0) || gk.on_ground() {
+        return None; // on the ground after a dive (or tripped)
     }
     if !pitch.is_inside_penalty_area(defend, ball.pos)
         || !pitch.is_inside_penalty_area(defend, gk.pos)

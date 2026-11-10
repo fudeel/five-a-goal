@@ -93,6 +93,17 @@ impl Mat {
     }
 }
 
+/// Elliptical cross-section for lofted surfaces: centre, unit side axis `u`,
+/// unit front axis `w`, half widths `a` (along u) and `b` (along w).
+#[derive(Clone, Copy, Debug)]
+pub struct Ring {
+    pub c: Vec3,
+    pub u: Vec3,
+    pub w: Vec3,
+    pub a: f32,
+    pub b: f32,
+}
+
 /// Vertex before lighting.
 #[derive(Clone, Copy, Debug)]
 pub struct Vtx {
@@ -351,6 +362,87 @@ impl MeshBuilder {
         }
         let ch = self.cur();
         ch.i.extend(t.indices.iter().map(|i| base + *i));
+    }
+
+    // ------------------------------------------------------------------
+    // Lofted surfaces (bodies)
+    // ------------------------------------------------------------------
+
+    /// Surface through a sequence of elliptical rings, with smooth normals.
+    /// `colors` (one per ring) override the material colour when given.
+    pub fn loft(&mut self, rings: &[Ring], segs: usize, m: &Mat, colors: Option<&[Rgba]>, caps: (bool, bool)) {
+        if rings.len() < 2 {
+            return;
+        }
+        let cols = segs + 1;
+        let nv = rings.len() * cols + if caps.0 { cols + 1 } else { 0 } + if caps.1 { cols + 1 } else { 0 };
+        let ni = (rings.len() - 1) * segs * 6 + (caps.0 as usize + caps.1 as usize) * segs * 3;
+        let base = self.start(nv, ni);
+        let point = |r: &Ring, cs: f32, sn: f32| r.c + r.u * (r.a * cs) + r.w * (r.b * sn);
+        let last = rings.len() - 1;
+        for (k, r) in rings.iter().enumerate() {
+            let c = colors.map(|c| c[k]).unwrap_or(m.color);
+            let (ra, rb) = (&rings[k.saturating_sub(1)], &rings[(k + 1).min(last)]);
+            for i in 0..cols {
+                let t = i as f32 / segs as f32 * std::f32::consts::TAU;
+                let (sn, cs) = t.sin_cos();
+                let p = point(r, cs, sn);
+                // In-plane (ellipse gradient) normal, then tilt it by the surface slope.
+                let n_r = (r.u * (cs / r.a.max(1e-4)) + r.w * (sn / r.b.max(1e-4))).normalize_or(r.u);
+                let along = point(rb, cs, sn) - point(ra, cs, sn);
+                let around = r.w * (r.b * cs) - r.u * (r.a * sn);
+                let mut n = if around.length_sq() > 1e-10 && along.length_sq() > 1e-10 {
+                    around.cross(along).normalize_or(n_r)
+                } else {
+                    // Pole of a closed shape: point along the axis.
+                    let axis = (rb.c - ra.c).normalize_or(n_r);
+                    if k == 0 { -axis } else { axis }
+                };
+                if n.dot(n_r) < 0.0 && around.length_sq() > 1e-10 {
+                    n = -n;
+                }
+                self.push_v(p, n, c, m);
+            }
+        }
+        for k in 0..(rings.len() - 1) as u16 {
+            for i in 0..segs as u16 {
+                let a = k * cols as u16 + i;
+                let b2 = a + cols as u16;
+                self.push_tri(base, a, b2, b2 + 1);
+                self.push_tri(base, a, b2 + 1, a + 1);
+            }
+        }
+        for (end, on) in [(0usize, caps.0), (rings.len() - 1, caps.1)] {
+            if !on {
+                continue;
+            }
+            let r = &rings[end];
+            let other = if end == 0 { &rings[1] } else { &rings[rings.len() - 2] };
+            let n = (r.c - other.c).normalize_or(r.u.cross(r.w));
+            let c = colors.map(|c| c[end]).unwrap_or(m.color);
+            let cb = self.cur().v.len() as u16 - base;
+            self.push_v(r.c + n * (0.35 * r.a.min(r.b)), n, c, m);
+            for i in 0..cols {
+                let t = i as f32 / segs as f32 * std::f32::consts::TAU;
+                let p = r.c + r.u * (r.a * t.cos()) + r.w * (r.b * t.sin());
+                let nn = (n * 0.7 + (p - r.c).normalize_or(n) * 0.3).normalize_or(n);
+                self.push_v(p, nn, c, m);
+            }
+            for i in 0..segs as u16 {
+                self.push_tri(base, cb, cb + 1 + i, cb + 2 + i);
+            }
+        }
+    }
+
+    /// Ellipsoid with semi-axes along the given (unit) axes.
+    pub fn ellipsoid(&mut self, c: Vec3, axes: [Vec3; 3], r: Vec3, segs: usize, rings: usize, m: &Mat) {
+        let mut rs = Vec::with_capacity(rings + 1);
+        for k in 0..=rings {
+            let phi = -std::f32::consts::FRAC_PI_2 + std::f32::consts::PI * k as f32 / rings as f32;
+            let (sp, cp) = phi.sin_cos();
+            rs.push(Ring { c: c + axes[1] * (r.y * sp), u: axes[0], w: axes[2], a: (r.x * cp).max(1e-4), b: (r.z * cp).max(1e-4) });
+        }
+        self.loft(&rs, segs, m, None, (false, false));
     }
 
     // ------------------------------------------------------------------

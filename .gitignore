@@ -1,0 +1,11 @@
+/target
+**/target
+*.pdb
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Git bundle used to hand branches over to the local repo
+/handoff/

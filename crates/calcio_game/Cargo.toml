@@ -1,0 +1,14 @@
+[package]
+name = "calcio_game"
+description = "CalcioFive game client: rendering and input (macroquad)."
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "calcio-five"
+path = "src/main.rs"
+
+[dependencies]
+calcio_core = { path = "../calcio_core" }
+macroquad = "0.4"

@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members = ["crates/calcio_core", "crates/calcio_game"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["fudeel"]
+
+# Debug builds: our code lightly optimised, dependencies fully optimised,
+# so physics and rendering stay smooth while iterating.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+opt-level = 3
+lto = "thin"

@@ -1,0 +1,8 @@
+[package]
+name = "calcio_core"
+description = "Physics, gameplay and AI for CalcioFive. Pure Rust, no dependencies."
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]

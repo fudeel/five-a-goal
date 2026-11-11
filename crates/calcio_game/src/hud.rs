@@ -54,7 +54,7 @@ pub fn power_bar(world: &World, cam: &CameraRig, charge: Option<(KickKind, f32)>
 
 /// Small help line at the bottom of the screen.
 pub fn controls_help() {
-    let s = "WASD move  Shift sprint  J shoot  K pass  L lob  I cross (hold)  Q/E curl  Space tackle  Esc pause  F1 debug";
+    let s = "Arrows move  E run  D shoot  S pass  A cross (hold)  L lob  no ball: S/D tackle, A slide  Q curl  Esc pause  F1 debug";
     draw_text(
         s,
         16.0,

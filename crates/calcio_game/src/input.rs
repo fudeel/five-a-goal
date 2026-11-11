@@ -1,9 +1,10 @@
 //! Keyboard controls for the human footballer.
 //!
-//! * WASD / arrows: move (relative to the camera); Shift: sprint
-//! * J shoot, K pass, L lob, I cross — hold to charge, release to kick
+//! * Arrows (and W): move (relative to the camera); E (or Shift): run
+//! * D shoot, S pass, A cross, L lob — hold to charge, release to kick
 //!   (a keeper holding the ball rolls it with pass and throws it with lob)
-//! * Q / E held while releasing: curl left / right
+//! * Without the ball: S or D standing tackle, A slide tackle
+//! * Q held while releasing: curl
 //! * Space: standing tackle
 
 use crate::render::camera::CameraRig;
@@ -23,11 +24,11 @@ pub struct HumanInput {
 
 fn key_for(kind: KickKind) -> KeyCode {
     match kind {
-        KickKind::Shot => KeyCode::J,
-        KickKind::Pass => KeyCode::K,
+        KickKind::Shot => KeyCode::D,
+        KickKind::Pass => KeyCode::S,
         KickKind::Lob | KickKind::Throw => KeyCode::L,
-        KickKind::Cross => KeyCode::I,
-        KickKind::Roll => KeyCode::K,
+        KickKind::Cross => KeyCode::A,
+        KickKind::Roll => KeyCode::S,
     }
 }
 
@@ -53,18 +54,18 @@ impl HumanInput {
         if is_key_down(KeyCode::W) || is_key_down(KeyCode::Up) {
             sy += 1.0;
         }
-        if is_key_down(KeyCode::S) || is_key_down(KeyCode::Down) {
+        if is_key_down(KeyCode::Down) {
             sy -= 1.0;
         }
-        if is_key_down(KeyCode::D) || is_key_down(KeyCode::Right) {
+        if is_key_down(KeyCode::Right) {
             sx += 1.0;
         }
-        if is_key_down(KeyCode::A) || is_key_down(KeyCode::Left) {
+        if is_key_down(KeyCode::Left) {
             sx -= 1.0;
         }
         let (right, up) = cam.ground_axes();
         let mv = (right * sx + up * sy).normalize_or_zero();
-        let sprint = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
+        let sprint = is_key_down(KeyCode::E) || is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
         let spec = world.player_spec.clone();
         {
             let p = &mut world.players[id];
@@ -78,13 +79,34 @@ impl HumanInput {
             p.dribble = true;
         }
 
-        // Kick charging.
+        // Kick charging; without the ball S / D tackle and A slides.
         if self.charging.is_none() {
+            let p = &world.players[id];
+            let owner = world.possession.owner;
+            let near = world.ball.pos.flat_distance(p.pos) < 2.5;
+            let has_ball = p.holding_ball || owner == Some(id) || (owner.is_none() && near);
             for kind in [KickKind::Shot, KickKind::Pass, KickKind::Lob, KickKind::Cross] {
-                if is_key_pressed(key_for(kind)) {
-                    self.charging = Some((kind, 0.0));
-                    break;
+                if !is_key_pressed(key_for(kind)) {
+                    continue;
                 }
+                match kind {
+                    KickKind::Shot | KickKind::Pass if !has_ball => {
+                        world.players[id].tackle_request = true;
+                    }
+                    KickKind::Cross if !has_ball => {
+                        let to_ball = (world.ball.pos - p.pos).flat();
+                        let dir = if mv != Vec3::ZERO {
+                            mv
+                        } else if to_ball.length() < 4.0 {
+                            to_ball.normalize_or(p.forward())
+                        } else {
+                            p.forward()
+                        };
+                        world.players[id].slide_request = Some(dir);
+                    }
+                    _ => self.charging = Some((kind, 0.0)),
+                }
+                break;
             }
         }
         if let Some((kind, t)) = self.charging {
@@ -96,9 +118,6 @@ impl HumanInput {
                 let mut curl = 0.0;
                 if is_key_down(KeyCode::Q) {
                     curl += 1.0;
-                }
-                if is_key_down(KeyCode::E) {
-                    curl -= 1.0;
                 }
                 let p = &world.players[id];
                 let dir = if mv != Vec3::ZERO { mv } else { p.forward() };
